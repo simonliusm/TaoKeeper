@@ -1,0 +1,325 @@
+diff --git src/java/main/org/apache/zookeeper/server/NIOServerCnxn.java src/java/main/org/apache/zookeeper/server/NIOServerCnxn.java
+index 2611ecc..74b5698 100644
+--- src/java/main/org/apache/zookeeper/server/NIOServerCnxn.java
++++ src/java/main/org/apache/zookeeper/server/NIOServerCnxn.java
+@@ -495,6 +495,9 @@ public class NIOServerCnxn extends ServerCnxn {
+ 
+     private static final String ZK_NOT_SERVING =
+         "This ZooKeeper instance is not currently serving requests";
++    
++    private static final String SERVER_PROCESS_STATS_NOT_OPEN =
++    	"server_process_stats not open, use -Dserver_process_stats=true to open.";
+ 
+     /**
+      * Set of threads for commmand ports. All the 4
+@@ -734,6 +737,35 @@ public class NIOServerCnxn extends ServerCnxn {
+             }
+         }
+     }
++    
++    private class RwpsCommand extends CommandThread {
++        public RwpsCommand( PrintWriter pw ) {
++                super( pw );
++        }
++
++        @Override
++        public void commandRun() {
++                if ( zkServer == null ) {
++                        pw.println( ZK_NOT_SERVING );
++                } else if ( !"true".equalsIgnoreCase( System.getProperty( ServerStats.SERVER_PROCESS_STATS, "false" ) ) ) {
++                        pw.println( SERVER_PROCESS_STATS_NOT_OPEN );
++                } else {
++                        pw.print( "RealTime R/W Statistics:" );
++                        if ( ServerStats.real_time_sps.isEmpty() ) {
++                                pw.print( "No request.\r\n" );
++                        } else {
++                                StringBuilder sb = new StringBuilder();
++                                for ( Integer type : ServerStats.real_time_sps.keySet() ) {
++                                        sb.append( "\r\n" ).append( "\t" )
++                                                        .append( Request.op2String( type ) + ": \t" + ServerStats.real_time_sps.get( type ).getRWps() )
++                                                        .append( "\r\n" );
++                                }
++                                pw.println( sb.toString() );
++                        }
++                }
++
++        }
++    }
+ 
+     private class MonitorCommand extends CommandThread {
+ 
+@@ -900,7 +932,11 @@ public class NIOServerCnxn extends ServerCnxn {
+             WatchCommand wcmd = new WatchCommand(pwriter, len);
+             wcmd.start();
+             return true;
+-        } else if (len == mntrCmd) {
++        } else if ( len == rwpsCmd ) {
++            RwpsCommand rwps = new RwpsCommand( pwriter );
++            rwps.start();
++            return true;
++        }else if (len == mntrCmd) {
+             MonitorCommand mntr = new MonitorCommand(pwriter);
+             mntr.start();
+             return true;
+diff --git src/java/main/org/apache/zookeeper/server/NettyServerCnxn.java src/java/main/org/apache/zookeeper/server/NettyServerCnxn.java
+index 0774da9..c175b44 100644
+--- src/java/main/org/apache/zookeeper/server/NettyServerCnxn.java
++++ src/java/main/org/apache/zookeeper/server/NettyServerCnxn.java
+@@ -289,6 +289,9 @@ public class NettyServerCnxn extends ServerCnxn {
+     private static final String ZK_NOT_SERVING =
+         "This ZooKeeper instance is not currently serving requests";
+     
++	private static final String SERVER_PROCESS_STATS_NOT_OPEN = 
++		"server_process_stats not open, use -Dserver_process_stats=true to open.";
++    
+     /**
+      * Set of threads for commmand ports. All the 4
+      * letter commands are run via a thread. Each class
+@@ -488,6 +491,35 @@ public class NettyServerCnxn extends ServerCnxn {
+         }
+     }
+     
++	private class RwpsCommand extends CommandThread {
++		public RwpsCommand( PrintWriter pw ) {
++			super( pw );
++		}
++
++		@Override
++		public void commandRun() {
++			if ( zkServer == null ) {
++				pw.println( ZK_NOT_SERVING );
++			} else if ( !"true".equalsIgnoreCase( System.getProperty( ServerStats.SERVER_PROCESS_STATS, "false" ) ) ) {
++				pw.println( SERVER_PROCESS_STATS_NOT_OPEN );
++			} else {
++				pw.print( "RealTime R/W Statistics:" );
++				if ( ServerStats.real_time_sps.isEmpty() ) {
++					pw.print( "No request.\r\n" );
++				} else {
++					StringBuilder sb = new StringBuilder();
++					for ( Integer type : ServerStats.real_time_sps.keySet() ) {
++						sb.append( "\r\n" ).append( "\t" )
++								.append( Request.op2String( type ) + ": \t" + ServerStats.real_time_sps.get( type ).getRWps() )
++								.append( "\r\n" );
++					}
++					pw.println( sb.toString() );
++				}
++			}
++
++		}
++	}
++    
+     private class ConsCommand extends CommandThread {
+         public ConsCommand(PrintWriter pw) {
+             super(pw);
+@@ -685,7 +717,11 @@ public class NettyServerCnxn extends ServerCnxn {
+             WatchCommand wcmd = new WatchCommand(pwriter, len);
+             wcmd.start();
+             return true;
+-        } else if (len == mntrCmd) {
++		} else if ( len == rwpsCmd ) {
++			RwpsCommand rwps = new RwpsCommand( pwriter );
++			rwps.start();
++			return true;
++		} else if (len == mntrCmd) {
+             MonitorCommand mntr = new MonitorCommand(pwriter);
+             mntr.start();
+             return true;
+@@ -853,4 +889,4 @@ public class NettyServerCnxn extends ServerCnxn {
+         return zkServer.serverStats();
+     }
+ 
+-}
++}
+\ No newline at end of file
+diff --git src/java/main/org/apache/zookeeper/server/ServerCnxn.java src/java/main/org/apache/zookeeper/server/ServerCnxn.java
+index 35ea301..836ab1f 100644
+--- src/java/main/org/apache/zookeeper/server/ServerCnxn.java
++++ src/java/main/org/apache/zookeeper/server/ServerCnxn.java
+@@ -213,6 +213,9 @@ public abstract class ServerCnxn implements Stats, Watcher {
+     protected final static int wchsCmd =
+         ByteBuffer.wrap("wchs".getBytes()).getInt();
+ 
++    protected final static int rwpsCmd =
++    	ByteBuffer.wrap("rwps".getBytes()).getInt();
++    
+     /*
+      * See <a href="{@docRoot}/../../../docs/zookeeperAdmin.html#sc_zkCommands">
+      * Zk Admin</a>. this link is for all the commands.
+@@ -256,6 +259,7 @@ public abstract class ServerCnxn implements Stats, Watcher {
+         cmd2String.put(wchsCmd, "wchs");
+         cmd2String.put(mntrCmd, "mntr");
+         cmd2String.put(isroCmd, "isro");
++        cmd2String.put(rwpsCmd, "rwps");
+         cmd2String.put(telnetCloseCmd, "telnet close");
+     }
+ 
+diff --git src/java/main/org/apache/zookeeper/server/ServerStats.java src/java/main/org/apache/zookeeper/server/ServerStats.java
+index aa0d93f..74c87c1 100644
+--- src/java/main/org/apache/zookeeper/server/ServerStats.java
++++ src/java/main/org/apache/zookeeper/server/ServerStats.java
+@@ -18,12 +18,20 @@
+ 
+ package org.apache.zookeeper.server;
+ 
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.atomic.AtomicLong;
++
++import org.apache.log4j.Logger;
++import org.apache.zookeeper.ZooDefs.OpCode;
+ 
+ 
+ /**
+  * Basic Server Statistics
+  */
+ public class ServerStats {
++	
++	private static final Logger LOG = Logger.getLogger(ServerStats.class);
++	
+     private long packetsSent;
+     private long packetsReceived;
+     private long maxLatency;
+@@ -33,6 +41,86 @@ public class ServerStats {
+ 
+     private final Provider provider;
+ 
++    public final static String SERVER_PROCESS_STATS = "server_process_stats"; 
++    //Add by nileader@gmail.com @see https://issues.apache.org/jira/browse/ZOOKEEPER-1804
++    final public static ConcurrentHashMap< Integer/**OpCode,request type*/, ServerProcessStats > real_time_sps = new ConcurrentHashMap< Integer, ServerProcessStats >();
++    
++	static class ServerProcessStats {
++
++		private int type;
++		private AtomicLong req_total = new AtomicLong();
++		private double req_rwps = 0;
++
++		public ServerProcessStats( int type ) {
++			this.type = type;
++		}
++
++		/**
++		 * increment rwps to req_total
++		 */
++		public void incrementRWps() {
++			req_total.incrementAndGet();
++		}
++
++		/**
++		 * real time rwps.(req_rwps)
++		 * 
++		 * @return
++		 */
++		public double getRWps() {
++			return req_rwps;
++		}
++
++		/**
++		 * Calculate rwps from req_total to req_rwps
++		 * 
++		 * @param time
++		 *            s
++		 */
++		public void calculateRWps( double time ) {
++			req_rwps = req_total.getAndSet( 0 ) / ( time );
++		}
++
++	}
++
++	static {
++
++		if ( "true".equalsIgnoreCase( System.getProperty( SERVER_PROCESS_STATS, "false" ) ) ) {
++			// init the real_time_sps.
++			real_time_sps.put( OpCode.create, new ServerProcessStats( OpCode.create ) );
++			real_time_sps.put( OpCode.setWatches, new ServerProcessStats( OpCode.setWatches ) );
++			real_time_sps.put( OpCode.delete, new ServerProcessStats( OpCode.delete ) );
++			real_time_sps.put( OpCode.exists, new ServerProcessStats( OpCode.exists ) );
++			real_time_sps.put( OpCode.getData, new ServerProcessStats( OpCode.getData ) );
++			real_time_sps.put( OpCode.setData, new ServerProcessStats( OpCode.setData ) );
++			real_time_sps.put( OpCode.getChildren, new ServerProcessStats( OpCode.getChildren ) );
++			real_time_sps.put( OpCode.getChildren2, new ServerProcessStats( OpCode.getChildren2 ) );
++			real_time_sps.put( OpCode.createSession, new ServerProcessStats( OpCode.createSession ) );
++			real_time_sps.put( OpCode.closeSession, new ServerProcessStats( OpCode.closeSession ) );
++
++			new Thread( new Runnable() {
++				public void run() {
++					LOG.info( "[ServerProcessStats]ServerProcessStats started." );
++					while ( true ) {
++						long start = System.currentTimeMillis();
++						try {
++							Thread.sleep( 1000 * 10 );
++						} catch ( InterruptedException e ) {
++						}
++						try {
++							long time = System.currentTimeMillis() - start;
++							for ( int type : real_time_sps.keySet() ) {
++								real_time_sps.get( type ).calculateRWps( time / 1000.0 );
++							}
++						} catch ( Throwable e ) {
++							LOG.error( "[ServerProcessStats]Error when ServerProcessStats due to " + e.getMessage(), e );
++						}
++					}
++				}
++			} ).start();
++		}
++	}
++
+     public interface Provider {
+         public long getOutstandingRequests();
+         public long getLastProcessedZxid();
+diff --git src/java/main/org/apache/zookeeper/server/ZooKeeperServer.java src/java/main/org/apache/zookeeper/server/ZooKeeperServer.java
+index adbd0cb..c4a20e5 100644
+--- src/java/main/org/apache/zookeeper/server/ZooKeeperServer.java
++++ src/java/main/org/apache/zookeeper/server/ZooKeeperServer.java
+@@ -642,6 +642,10 @@ public class ZooKeeperServer implements SessionExpirer, ServerStats.Provider {
+     }
+ 
+     public void submitRequest(Request si) {
++    	
++		if ( "true".equalsIgnoreCase( System.getProperty( ServerStats.SERVER_PROCESS_STATS, "false" ) ) ) {
++			statTps( si.type );
++		}
+         if (firstProcessor == null) {
+             synchronized (this) {
+                 try {
+@@ -1021,5 +1025,42 @@ public class ZooKeeperServer implements SessionExpirer, ServerStats.Provider {
+         }
+         return rc;
+     }
++    
++	/**
++	 * increment the tps of some types:
++	 * <p>
++	 * create<br>
++	 * setWatches<br>
++	 * delete<br>
++	 * exists<br>
++	 * getData<br>
++	 * setData<br>
++	 * getChildren<br>
++	 * getChildren2<br>
++	 * createSession<br>
++	 * closeSession<br>
++	 * </p>
++	 * 
++	 * @param type
++	 */
++	private void statTps( int type ) {
++
++		switch ( type ) {
++		case OpCode.create:
++		case OpCode.setWatches:
++		case OpCode.delete:
++		case OpCode.exists:
++		case OpCode.getData:
++		case OpCode.setData:
++		case OpCode.getChildren:
++		case OpCode.getChildren2:
++		case OpCode.createSession:
++		case OpCode.closeSession:
++			ServerStats.real_time_sps.get( type ).incrementRWps();
++			break;
++		default:
++			return;
++		}
++	}
+ 
+ }
